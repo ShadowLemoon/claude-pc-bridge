@@ -1,0 +1,36 @@
+#!/bin/bash
+# Claude Code 的 PreToolUse(Bash) 钩子：把操作挂载目录的命令改写成 pcrun 调用，在 PC 上执行。
+# 满足任一条件就转发：
+#   1. 会话工作目录在挂载目录下
+#   2. 命令里出现了挂载目录路径（绝对路径、~/...、$HOME/...）
+# 不转发：以 #local 开头的命令（留在 VPS 上执行）、已经是 pcrun 调用的命令。
+# 不输出任何内容 = 不改写，按原样在 VPS 上执行。
+set -u
+BIN_DIR="$(dirname "$(readlink -f "$0")")"
+# shellcheck source=../lib/common.sh
+. "$BIN_DIR/../lib/common.sh"
+pc_bridge_load_config
+
+input=$(cat)
+cwd=$(jq -r '.cwd // empty' <<<"$input")
+cmd=$(jq -r '.tool_input.command // empty' <<<"$input")
+
+case "$cmd" in
+  "#local"*|pcrun\ *|*/pcrun\ *) exit 0 ;;
+esac
+
+forward=0
+case "$cwd/" in
+  "$MOUNT"/*) forward=1 ;;
+esac
+if [ "$forward" -eq 0 ]; then
+  for alias in "${MOUNT_ALIASES[@]}"; do
+    case "$cmd" in
+      *"$alias"*) forward=1; break ;;
+    esac
+  done
+fi
+[ "$forward" -eq 1 ] || exit 0
+
+jq -n --argjson ti "$(jq '.tool_input' <<<"$input")" --arg cmd "$cmd" --arg pcrun "$BIN_DIR/pcrun" \
+  '{hookSpecificOutput: {hookEventName: "PreToolUse", updatedInput: ($ti + {command: ($pcrun + " " + ($cmd | @sh))})}}'

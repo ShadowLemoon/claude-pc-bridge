@@ -1,0 +1,17 @@
+# 由 install.sh --service 替换 @USER@ / @PREFIX@ 后安装到 /etc/systemd/system/pc-sshfs.service
+[Unit]
+Description=sshfs mount of the PC code directory over the reverse SSH tunnel
+After=network-online.target ssh.service
+Wants=network-online.target
+
+[Service]
+User=@USER@
+ExecStart=@PREFIX@/bin/pc-sshfs run
+ExecStopPost=-@PREFIX@/bin/pc-sshfs unmount
+# 隧道断开或 sshfs 崩溃后 5 秒自动重启；启动时会一直等到隧道可用
+Restart=always
+RestartSec=5
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=multi-user.target

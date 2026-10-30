@@ -1,0 +1,49 @@
+#!/bin/bash
+# 通过反向隧道用 sshfs 把 PC 的代码目录挂载到 VPS。
+# 用法:
+#   pc-sshfs run      清掉残留挂载 → 等隧道可用 → 前台挂载（给 systemd 服务用）
+#   pc-sshfs unmount  卸载挂载目录
+#   pc-sshfs check    检查能否通过隧道登录 PC
+set -u
+LIB_DIR="$(dirname "$(readlink -f "$0")")/../lib"
+# shellcheck source=../lib/common.sh
+. "$LIB_DIR/common.sh"
+pc_bridge_load_config
+pc_bridge_require_user
+pc_bridge_ssh_opts
+
+do_unmount() {
+  fusermount3 -uz "$MOUNT" 2>/dev/null || fusermount -uz "$MOUNT" 2>/dev/null || true
+}
+
+do_check() {
+  ssh "${SSH_OPTS[@]}" -o ConnectTimeout=5 "$PC_SSH_USER@$PC_SSH_HOST" true
+}
+
+case "${1:-}" in
+  run)
+    # 隧道断开后会留下失效的挂载点，访问它会报错，所以先卸载
+    do_unmount
+    mkdir -p "$MOUNT"
+    until do_check 2>/dev/null; do sleep 5; done
+    exec sshfs -f \
+      -o "IdentityFile=$PC_SSH_KEY,IdentitiesOnly=yes,BatchMode=yes,port=$PC_SSH_PORT" \
+      -o reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,cache=yes,follow_symlinks \
+      "$PC_SSH_USER@$PC_SSH_HOST:$PC_SFTP_PATH" "$MOUNT"
+    ;;
+  unmount)
+    do_unmount
+    ;;
+  check)
+    if do_check; then
+      echo "可以通过 $PC_SSH_HOST:$PC_SSH_PORT 登录 PC"
+    else
+      echo "无法登录 PC：检查 PC 上的反向隧道是否已开启" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "用法: pc-sshfs run|unmount|check" >&2
+    exit 2
+    ;;
+esac
