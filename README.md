@@ -44,6 +44,7 @@
 | `vps/sshd_config.d/45-reverse-tunnel.conf` | VPS sshd 配置：及时释放断开的隧道 |
 | `pc/ssh_config.example` | 电脑端的隧道配置 |
 | `claude/settings.hook.json` | 写入 Claude Code 设置的钩子片段 |
+| `claude/CLAUDE.md.example` | 加到 `~/.claude/CLAUDE.md` 的工作规则：实际工作都在电脑上做 |
 | `test/test.sh` | 转发判断和路径替换的测试 |
 
 ## 安装
@@ -95,6 +96,7 @@
    ```
    服务启动时会先清掉残留的失效挂载，等隧道可用后再挂载；隧道断开或 sshfs 崩溃后 5 秒自动重启。
 6. **（推荐）VPS sshd 配置**：把 `vps/sshd_config.d/45-reverse-tunnel.conf` 放到 `/etc/ssh/sshd_config.d/`，再 `sudo systemctl reload ssh`。电脑掉线后 VPS 约 45 秒就能释放 2222 端口，重连时不会因为端口还被占用而失败。
+7. **（推荐）告诉 Claude 在电脑上干活**：把 `claude/CLAUDE.md.example` 的内容加到 VPS 的 `~/.claude/CLAUDE.md`。这个文件每次会话都会加载，让 Claude 把构建、测试、git、大范围搜索都放到挂载目录里执行（也就是在电脑上执行），不占用 VPS 的资源。
 
 ## 使用
 

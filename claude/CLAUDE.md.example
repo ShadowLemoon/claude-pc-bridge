@@ -1,0 +1,12 @@
+# 运行环境
+
+这台 Linux VPS 只用来运行 Claude Code 本身，性能有限。所有实际工作都在 Windows 电脑上做。
+
+- 代码都在 `~/work/pc-code/<项目>`，这是电脑上 `D:\Code` 的 sshfs 挂载。新建项目、clone 仓库也放在这下面，不要放在 VPS 本地目录。
+- Bash 命令满足任一条件时，会自动转发到电脑的 Git Bash 执行：会话工作目录在 `~/work/pc-code` 下；命令里写了 `~/work/pc-code/...` 路径。
+  - 构建、测试、git、python / uv / npm、安装依赖、长时间运行的进程，都必须这样在电脑上执行。
+  - 不要在 VPS 本地安装依赖、跑构建或测试，也不要对挂载目录直接运行 VPS 上的 git。
+- 读、改单个文件用 Read / Edit / Write 工具即可，它们通过挂载直接写到电脑上。
+- 搜索代码用 Bash 在项目目录里执行 `grep` / `rg` / `find`，命令会转发到电脑上跑。
+- 只有管理 VPS 自身（systemctl、sshd、挂载状态、`~/.claude` 配置）时才在 VPS 上执行。这类命令如果写了挂载路径，要在开头加 `#local`，否则会被转发到电脑。
+- 转发和挂载由 `~/work/pc-code/claude-pc-bridge` 管理，机制细节和排障方法见它的 README。
