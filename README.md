@@ -9,7 +9,7 @@
 
 ```
  Windows 电脑                                   Linux VPS
-┌──────────────────────┐  ssh -N vps-tunnel   ┌──────────────────────────────────┐
+┌──────────────────────┐   托盘程序建立隧道   ┌──────────────────────────────────┐
 │ OpenSSH Server :22   │ ───────────────────▶ │ localhost:2222 → 电脑的 22 端口   │
 │ 默认 shell: Git Bash │   (RemoteForward)    │                                  │
 │                      │                      │ pc-sshfs 服务                     │
@@ -20,7 +20,7 @@
                                               └──────────────────────────────────┘
 ```
 
-- **反向隧道**：电脑主动连 VPS，把 VPS 的 `localhost:2222` 转发到电脑的 22 端口。电脑不需要公网 IP，也不用开放入站端口。
+- **反向隧道**：电脑上的托盘程序 `claude-pc-bridge-tray` 主动连 VPS，把 VPS 的 `localhost:2222` 转发到电脑的 22 端口。电脑不需要公网 IP，也不用开放入站端口。托盘程序自己实现 ssh 连接和代理，不依赖 `ssh.exe`、`connect.exe`，也不读写 `~/.ssh` 下的文件。
 - **sshfs 挂载**：VPS 通过隧道把电脑的 `D:\Code` 挂到 `~/work/pc-code`。Claude Code 的读、改文件工具直接操作这个目录。
 - **命令转发**：Claude Code 每次执行 Bash 命令前会调用钩子 `pcrun-hook`。满足以下任一条件时，钩子把命令改写成 `pcrun '<命令>'`，通过 ssh 到电脑的 Git Bash 里执行：
   1. 会话工作目录在 `~/work/pc-code` 下；
@@ -42,7 +42,9 @@
 | `install.sh` | VPS 端安装脚本 |
 | `vps/pc-sshfs.service.in` | systemd 服务模板 |
 | `vps/sshd_config.d/45-reverse-tunnel.conf` | VPS sshd 配置：及时释放断开的隧道 |
-| `pc/ssh_config.example` | 电脑端的隧道配置 |
+| `pc/tray/` | 电脑端托盘程序（Go）：保持隧道、断线自动重连、显示状态 |
+| `pc/tray/build.sh` | 编译 Windows 和 Linux 版本到 `pc/tray/dist/` |
+| `pc/linux/pc-tunnel.service` | 没有桌面的 Linux 用户主机：用 systemd 用户服务运行托盘程序的命令行模式 |
 | `claude/settings.hook.json` | 写入 Claude Code 设置的钩子片段 |
 | `claude/CLAUDE.md.example` | 加到 `~/.claude/CLAUDE.md` 的工作规则：实际工作都在电脑上做 |
 | `test/test.sh` | 转发判断和路径替换的测试 |
@@ -68,11 +70,36 @@
 3. **允许 VPS 的密钥登录电脑**：在 VPS 上生成密钥 `ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_pc`，把 `id_ed25519_pc.pub` 的内容加到电脑上：
    - 普通用户：`C:\Users\<你>\.ssh\authorized_keys`
    - **管理员组用户**：Windows OpenSSH 默认读的是 `C:\ProgramData\ssh\administrators_authorized_keys`（权限只能有 Administrators 和 SYSTEM），写在用户目录下不生效。
-4. **配置反向隧道**：把 `pc/ssh_config.example` 的内容追加到电脑的 `~/.ssh/config`，改成你的 VPS 地址、用户和密钥。然后开启隧道：
+4. **编译托盘程序**（需要 Go 1.26 以上），在 Git Bash 里：
    ```bash
-   ssh -N vps-tunnel
+   bash pc/tray/build.sh    # 输出 pc/tray/dist/claude-pc-bridge-tray.exe
    ```
-   这个窗口要一直开着。电脑重启或睡眠后要重新执行。
+   把 exe 放到一个固定位置（如 `%LOCALAPPDATA%\Programs\claude-pc-bridge\`）。开机自动启动记录的是 exe 的路径，移动后要重新勾选。
+5. **配置隧道**：双击运行 exe，托盘里出现一个圆点图标。
+   1. 第一次运行会生成程序专用的密钥，并用记事本打开配置文件 `%APPDATA%\claude-pc-bridge\tray.json`。填好 VPS 地址、用户名和代理，保存后自动生效：
+      ```json
+      {
+        "host": "vps.example.com",
+        "port": 22,
+        "user": "your-vps-user",
+        "proxy": "socks5://127.0.0.1:7890",
+        "remote_listen": "localhost:2222",
+        "local_target": "localhost:22",
+        "keepalive_seconds": 15,
+        "keepalive_max_missed": 3,
+        "max_retry_seconds": 60
+      }
+      ```
+      `proxy` 留空表示直接连接，也支持 `http://` 代理。
+   2. 右键托盘图标 →「复制公钥」，把公钥追加到 VPS 上 `~/.ssh/authorized_keys` 的末尾。
+   3. 程序第一次连上 VPS 时会弹窗显示主机指纹。在 VPS 上运行 `for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf $f; done` 核对，一致再点「是」。
+   4. 图标变绿表示隧道已建好。右键勾选「登录时自动启动」。
+
+   图标颜色：绿色是已连接；黄色是正在连接；红色是连接失败、等待重试，或者配置没填好；灰色是已暂停。鼠标悬停可以看到详情。断线超过 1 分钟还没重连上时会弹系统通知，恢复后再提示一次。
+
+   托盘程序会自动重连：每 15 秒发一次心跳，连续 3 次没回应就断开重连，睡眠唤醒、换网络后约 1 分钟内恢复。连续连不上时，重试间隔从 5 秒开始逐次翻倍，最长 60 秒。程序的配置、密钥、`known_hosts`（主机指纹）和日志 `tunnel.log` 都在 `%APPDATA%\claude-pc-bridge\`，右键菜单里可以直接打开。
+
+   **用户主机是 Linux 时**：有桌面就同样运行 `dist/claude-pc-bridge-tray`，配置目录是 `~/.config/claude-pc-bridge/`；GNOME 需要装 AppIndicator 扩展才能显示托盘图标。没有桌面就用 systemd 用户服务 `pc/linux/pc-tunnel.service`，安装方法写在文件开头的注释里。另外，要把 VPS 端 `config.env` 里的 `PC_ROOT` 和 `PC_SFTP_PATH` 都改成 Linux 上的代码目录，并跳过上面第 2 步（设置 Git Bash 为默认 shell）。
 
 ### 2. VPS 端（Linux）
 

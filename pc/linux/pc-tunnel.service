@@ -1,0 +1,24 @@
+# 用户主机是没有桌面的 Linux 时，用 systemd 用户服务运行托盘程序的命令行模式，保持到 VPS 的反向隧道。
+# 安装:
+#   bash pc/tray/build.sh && install -Dm755 pc/tray/dist/claude-pc-bridge-tray ~/.local/bin/claude-pc-bridge-tray
+#   claude-pc-bridge-tray -console     # 第一次运行：生成配置和密钥，按提示填写配置、把公钥加到 VPS
+#   claude-pc-bridge-tray -console     # 第二次运行：确认 VPS 主机指纹，看到"已连接"后 Ctrl+C 退出
+#   mkdir -p ~/.config/systemd/user && cp pc/linux/pc-tunnel.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now pc-tunnel
+#   loginctl enable-linger "$USER"   # 开机后不登录也启动
+# 查看: systemctl --user status pc-tunnel / journalctl --user -u pc-tunnel -f
+[Unit]
+Description=Reverse SSH tunnel to the VPS (claude-pc-bridge)
+After=network-online.target
+Wants=network-online.target
+# 程序意外退出时一直重启，不让 systemd 放弃
+StartLimitIntervalSec=0
+
+[Service]
+# 断线重连由程序自己处理；配置在 ~/.config/claude-pc-bridge/tray.json
+ExecStart=%h/.local/bin/claude-pc-bridge-tray -console
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
