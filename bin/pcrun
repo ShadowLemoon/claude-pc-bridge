@@ -42,12 +42,13 @@ fi
 session="${PC_BRIDGE_SESSION:-}"
 session="${session//[^A-Za-z0-9_-]/}"
 
-# 发给电脑执行的脚本。用 C 语言环境的 %q 引用，中文等非 ASCII 字符会写成 $'\344...' 的转义，
-# 整个脚本只有 ASCII 字符，经过 Windows 的 ssh 传输不会出现编码问题
-q() { LC_ALL=C printf '%q' "$1"; }
-remote="__pcb_cmd=$(q "$cmd")
-__pcb_start=$(q "$start")
-__pcb_claude=$(q "$claude_pc")
+# 发给电脑执行的脚本。命令和路径写成 $'...'，引号、反斜杠和非 ASCII 字符（如中文）都写成 \NNN 八进制转义：
+# - 整个脚本只有 ASCII 字符，经过 Windows 的 ssh 传输不会出现编码问题
+# - 脚本里不会出现"反斜杠紧跟双引号"，见下面 ssh 前的反斜杠加倍
+vars=$(perl -e 'for (@ARGV) { my ($k, $v) = split /=/, $_, 2;
+  $v =~ s/([^A-Za-z0-9 _.,:\/=+@%^-])/sprintf("\\%03o", ord $1)/ge; print "$k=\$\x27$v\x27\n" }' \
+  "__pcb_cmd=$cmd" "__pcb_start=$start" "__pcb_claude=$claude_pc")
+remote="$vars
 __pcb_state=$([ -n "$session" ] && printf '"$HOME"/.cache/claude-pc-bridge/sessions/%s.sh' "$session")
 $(grep -Ev '^[[:space:]]*(#|$)' "$LIB_DIR/remote-prelude.sh")"
 
@@ -57,6 +58,9 @@ else
   pc_bridge_require_user
   pc_bridge_ssh_opts
   mkdir -p "$PC_BRIDGE_CACHE"
+  # Windows 的 sshd 把命令交给 Git Bash 时，会把连续两个反斜杠变成一个（后面紧跟双引号时规则更乱，
+  # 所以上面保证脚本里不出现这种组合）。这里先把反斜杠全部加倍抵消掉。
+  remote=${remote//\\/\\\\}
   run() {
     ssh -T "${SSH_OPTS[@]}" -o ControlMaster=auto -o ControlPath="$PC_BRIDGE_CACHE/cm-%C" \
       -o ControlPersist=10m "$PC_SSH_USER@$PC_SSH_HOST" "$remote"

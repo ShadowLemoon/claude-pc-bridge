@@ -30,7 +30,7 @@ case "$cmd" in
   "#local"*|pcrun\ *|*/pcrun\ *|". '"*"/pcrun-session' "*) exit 0 ;;
 esac
 
-printf '%s' "$cmd" | MOUNT="$MOUNT" PC_ROOT="$PC_ROOT" perl "$BIN_DIR/../lib/pathmap.pl" check "$cwd" || exit 0
+printf '%s' "$cmd" | MOUNT="$MOUNT" PC_ROOT="$PC_ROOT" PC_BRIDGE_LOCAL_PROGRAMS="$PC_BRIDGE_LOCAL_PROGRAMS" perl "$BIN_DIR/../lib/pathmap.pl" check "$cwd" || exit 0
 
 jq -n --argjson ti "$(jq '.tool_input' <<<"$input")" --arg cmd "$cmd" --arg s "$session" \
   --arg run "$BIN_DIR/pcrun-session" \

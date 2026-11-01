@@ -4,6 +4,8 @@
 
 pc_bridge_load_config() {
   local config="${PC_BRIDGE_CONFIG:-$HOME/.config/claude-pc-bridge/config.env}"
+  # 始终在 VPS 上执行的程序。在配置文件里先设好默认值，配置文件可以整个改写，也可以用 += 追加
+  PC_BRIDGE_LOCAL_PROGRAMS="multica claude systemctl journalctl sudo crontab sshfs fusermount fusermount3 pc-sshfs"
   if [ -f "$config" ]; then
     # shellcheck disable=SC1090
     . "$config"

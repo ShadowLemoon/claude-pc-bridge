@@ -38,7 +38,7 @@ route() {
   out=$(jq -n --arg c "$1" --arg m "$2" '{session_id:"s1",cwd:$c,tool_input:{command:$m}}' | bash "$ROOT/bin/pcrun-hook")
   if [ -z "$out" ]; then echo local; else jq -r .hookSpecificOutput.updatedInput.command <<<"$out"; fi
 }
-fwd() { printf ". '%s' 's1' %s" "$SESSION" "'$1'"; }
+fwd() { local q="'\\''"; printf ". '%s' 's1' '%s'" "$SESSION" "${1//\'/$q}"; }
 
 check "挂载目录外的普通命令留在本地" local "$(route "$HOME" 'ls')"
 check "挂载目录下的命令转发" "$(fwd 'git status')" "$(route "$M/proj" 'git status')"
@@ -56,6 +56,25 @@ check "相对路径落在挂载目录里时转发" "$(fwd 'cd pc-code/proj && gi
 check "../ 相对路径落在挂载目录里时转发" "$(fwd 'ls ../pc-code')" "$(route "$HOME/work/other" 'ls ../pc-code')"
 check "相对路径不在挂载目录里时留在本地" local "$(route "$HOME/work" 'ls other/x')"
 check "引号里的整句话不算路径" local "$(route "$HOME/work" 'echo "pc-code is here"')"
+
+# ---- 钩子：白名单里的程序始终留在 VPS ----
+check "白名单程序在挂载目录下也留在本地" local "$(route "$M/proj" 'multica issue list')"
+check "白名单程序写了完整路径" local "$(route "$M/proj" '/usr/local/bin/multica issue list')"
+check "白名单程序在 cd 之后" local "$(route "$M/proj" 'cd ~/work/pc-code/proj && multica issue get 1')"
+check "白名单程序在管道后面" local "$(route "$M/proj" 'git log | multica issue comment add 1')"
+check "白名单程序带变量赋值和 env 前缀" local "$(route "$M/proj" 'FOO=1 env -u X multica x')"
+check "白名单程序在 \$(...) 里" local "$(route "$M/proj" 'echo $(multica issue get 1)')"
+check "白名单程序在下一行" local "$(route "$M/proj" $'git status\nsudo systemctl restart x')"
+check "白名单程序名只作为参数时照常转发" "$(fwd 'git log --grep multica')" "$(route "$M/proj" 'git log --grep multica')"
+check "重定向目标不算程序名" "$(fwd 'echo hi > multica')" "$(route "$M/proj" 'echo hi > multica')"
+check "2>&1 后面的参数不算程序名" "$(fwd 'ls 2>&1 claude')" "$(route "$M/proj" 'ls 2>&1 claude')"
+check "引号里的文字不算程序名" "$(fwd 'echo "x; multica"')" "$(route "$M/proj" 'echo "x; multica"')"
+check "heredoc 正文里的白名单程序名不算" "$(fwd $'git commit -F - <<\'EOF\'\nsudo crontab sshfs\nEOF\ngit log')" \
+  "$(route "$M/proj" $'git commit -F - <<\'EOF\'\nsudo crontab sshfs\nEOF\ngit log')"
+check "<<- heredoc 正文也跳过" "$(fwd $'cat <<-X\n\tmultica\n\tX')" "$(route "$M/proj" $'cat <<-X\n\tmultica\n\tX')"
+check "heredoc 结束后的白名单程序照样认出" local "$(route "$M/proj" $'cat <<EOF\nhi\nEOF\nmultica x')"
+check "<<< 后面不当 heredoc" local "$(route "$M/proj" $'cat <<< hi\nmultica x')"
+check "配置里追加的程序也留在本地" local "$(echo 'PC_BRIDGE_LOCAL_PROGRAMS+=" mytool"' >>"$PC_BRIDGE_CONFIG"; route "$M/proj" 'mytool run')"
 
 # ---- 命令里的路径换算 ----
 dry() { (cd "$1" && PC_BRIDGE_DRY_RUN=1 bash "$PCRUN" "$2"); }
@@ -121,6 +140,8 @@ check "语法错误不影响状态保存" "3" "$(sess "$M/proj" 'if then' >/dev/
 check "不同会话互不影响" "" "$(cd "$M/proj" && PC_BRIDGE_CONFIG="$TMP/local.env" PC_BRIDGE_LOCAL_EXEC=1 . "$SESSION" t2 'echo $N')"
 check "中文参数原样传到电脑" "提交说明" "$(sess "$M/proj" 'echo 提交说明' | head -1)"
 check "命令输出里的电脑路径换成挂载路径" "$M/proj/sub/a.py" "$(sess "$M/proj" "echo $PCDIR/proj/sub/a.py" | head -1)"
+check "反斜杠、引号、中文原样传到电脑" "a\\|b x\"y it's 中文 end\\" \
+  "$(cd "$M/proj" && PC_BRIDGE_CONFIG="$TMP/local.env" PC_BRIDGE_LOCAL_EXEC=1 bash "$PCRUN" "echo 'a\\|b' \"x\\\"y\" \"it's\" 中文 'end\\'")"
 check "管道输入能传到电脑上的命令" "piped" "$(echo piped | (cd "$M/proj" && PC_BRIDGE_CONFIG="$TMP/local.env" PC_BRIDGE_LOCAL_EXEC=1 bash "$PCRUN" 'cat'))"
 
 echo "通过 $pass，失败 $fail"

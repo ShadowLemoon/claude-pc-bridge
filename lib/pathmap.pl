@@ -1,6 +1,7 @@
 #!/usr/bin/perl
 # 路径换算。由 bin/ 下的脚本调用，配置从环境变量 MOUNT、PC_ROOT、HOME 读取。
-#   check   <cwd>       命令从标准输入读。命令里用到了挂载目录就返回 0（要转发），否则返回 1
+#   check   <cwd>       命令从标准输入读。命令里用到了挂载目录就返回 0（要转发），否则返回 1；
+#                       用到了 PC_BRIDGE_LOCAL_PROGRAMS 里的程序时总是返回 1
 #   rewrite <cwd>       命令从标准输入读。把命令里的 VPS 挂载路径换成电脑上的路径后输出；
 #                       用到只在 VPS 上存在的文件时，在标准错误输出提示
 #   filter-out          把电脑输出里的电脑路径换成 VPS 挂载路径，用于标准输出
@@ -60,15 +61,56 @@ sub normalize {
     return '/' . join('/', @out);
 }
 
-# 按 shell 规则把命令拆成单词。每个单词记下在原文里的位置、去掉引号后的值，以及有没有引号、变量、转义
+# 写在程序名前面、不影响由哪个程序执行的词：shell 关键字和 env、time 这类包装命令
+my %cmd_prefix = map { $_ => 1 } qw(if then else elif do while until ! { time env nohup command exec builtin nice);
+
+# 按 shell 规则把命令拆成单词。每个单词记下在原文里的位置、去掉引号后的值，有没有引号、变量、转义，
+# 以及是不是程序名（每条简单命令里第一个不是变量赋值、关键字、包装命令、重定向目标的词）
 sub split_words {
     my ($s) = @_;
     my @words;
     my $i = 0;
     my $len = length $s;
+    my ($at_cmd, $redir, $in_env, $env_arg) = (1, 0, 0, 0);
+    my ($heredoc_next, @heredocs) = (0);    # 还没读到正文的 heredoc：[结束标记, 是否 <<-]
     while ($i < $len) {
         my $c = substr($s, $i, 1);
-        if ($c =~ /\s/ || $c =~ /[;|&()<>]/) { $i++; next }
+        if ($c eq "\n" && @heredocs) {
+            # 跳过 heredoc 正文，正文不是命令
+            $i++;
+            for my $h (@heredocs) {
+                my ($delim, $strip) = @$h;
+                while ($i < $len) {
+                    my $nl = index($s, "\n", $i);
+                    $nl = $len if $nl < 0;
+                    my $line = substr($s, $i, $nl - $i);
+                    $line =~ s/^\t+// if $strip;
+                    $i = $nl + 1;
+                    last if $line eq $delim;
+                }
+            }
+            @heredocs = ();
+            ($at_cmd, $redir, $in_env, $env_arg) = (1, 0, 0, 0);
+            next;
+        }
+        if (substr($s, $i, 3) eq '<<<') { $redir = 1; $i += 3; next }
+        if (substr($s, $i, 2) eq '<<') {
+            # << 或 <<-：下一个词是结束标记
+            my $strip = substr($s, $i + 2, 1) eq '-';
+            $i += $strip ? 3 : 2;
+            $heredoc_next = $strip ? 2 : 1;
+            $redir = 1;
+            next;
+        }
+        if ($c eq "\n" || $c =~ /[;|&(]/) {
+            # >&2 里的 & 不是命令分隔符
+            $at_cmd = 1 unless $c eq '&' && $i > 0 && substr($s, $i - 1, 1) =~ /[<>]/;
+            ($redir, $in_env, $env_arg) = (0, 0, 0) if $at_cmd;
+            $i++;
+            next;
+        }
+        if ($c =~ /[<>]/) { $redir = 1; $i++; next }
+        if ($c =~ /\s/ || $c eq ')') { $i++; next }
         if ($c eq '#') {    # 注释到行尾
             $i++ while $i < $len && substr($s, $i, 1) ne "\n";
             next;
@@ -105,9 +147,43 @@ sub split_words {
                 $i++;
             }
         }
-        push @words, { start => $start, len => $i - $start, value => $value, quoted => $quoted, dynamic => $dynamic };
+        if ($heredoc_next) {
+            push @heredocs, [$value, $heredoc_next == 2];
+            $heredoc_next = 0;
+        }
+        my $is_cmd = 0;
+        if ($redir) {
+            $redir = 0;
+        } elsif ($at_cmd) {
+            my $raw = substr($s, $start, $i - $start);
+            if ($env_arg) {
+                $env_arg = 0;
+            } elsif ($in_env && $raw =~ /^-/) {
+                $env_arg = 1 if $raw =~ /^(-[uC]|--unset|--chdir)$/;    # env 的这几个选项带一个参数
+            } elsif ($raw =~ /^[A-Za-z_]\w*\+?=/ || $cmd_prefix{$raw}) {
+                $in_env = 1 if $raw eq 'env';
+            } else {
+                $is_cmd = 1;
+                $at_cmd = $in_env = 0;
+            }
+        }
+        push @words, { start => $start, len => $i - $start, value => $value, quoted => $quoted,
+                       dynamic => $dynamic, is_cmd => $is_cmd };
     }
     return @words;
+}
+
+# 命令里用到了白名单（环境变量 PC_BRIDGE_LOCAL_PROGRAMS，空格分隔）里的程序。按程序名比较，忽略目录
+sub uses_local_program {
+    my ($cmd) = @_;
+    my %local = map { $_ => 1 } split ' ', ($ENV{PC_BRIDGE_LOCAL_PROGRAMS} // '');
+    return 0 unless %local;
+    for my $w (split_words($cmd)) {
+        next unless $w->{is_cmd};
+        (my $name = $w->{value}) =~ s{.*/}{};
+        return 1 if $local{$name};
+    }
+    return 0;
 }
 
 # 单词里可能是路径的部分：整个单词，或者 --opt=值 里等号后面的值
@@ -144,6 +220,7 @@ sub read_stdin {
 if ($mode eq 'check') {
     my $cwd = shift // '';
     my $cmd = read_stdin();
+    exit 1 if uses_local_program($cmd);
     exit 0 if under_mount($cwd);
     my (undef, $n) = replace_aliases($cmd);
     exit 0 if $n;

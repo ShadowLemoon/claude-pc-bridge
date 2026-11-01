@@ -10,4 +10,5 @@
 - 搜索代码用 Bash 在项目目录里执行 `grep` / `rg` / `find`，命令会转发到电脑上跑。
 - 转发的命令像同一个 shell：`cd`、`export`、激活的虚拟环境、函数、别名会保留到下一条命令；输出里的电脑路径（`D:\Code\...`、`/d/Code/...`）会换成 `~/work/pc-code/...` 的完整路径，可以直接用 Read / Edit 打开。
 - 只有管理 VPS 自身（systemctl、sshd、挂载状态、`~/.claude` 配置）时才在 VPS 上执行。这类命令如果写了挂载路径，要在开头加 `#local`，否则会被转发到电脑。
+- `multica`、`claude`、`systemctl`、`journalctl`、`sudo` 等白名单里的程序总是在 VPS 上执行，不用加 `#local`。
 - 转发和挂载由 `~/work/pc-code/claude-pc-bridge` 管理，机制细节和排障方法见它的 README。

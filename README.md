@@ -26,6 +26,10 @@
   1. 会话工作目录在 `~/work/pc-code` 下；
   2. 命令里出现了挂载目录路径（`/home/<你>/work/pc-code`、`~/work/pc-code`、`$HOME/work/pc-code`），按路径边界匹配，`~/work/pc-code-old` 不算；
   3. 命令里的相对路径按当前目录解析后落在挂载目录里，如在 `~/work` 下执行 `cd pc-code/proj`。
+
+  以下情况不转发，留在 VPS 上执行：
+  - 命令以 `#local` 开头；
+  - 命令用到了白名单里的程序（配置项 `PC_BRIDGE_LOCAL_PROGRAMS`）。默认是 `multica claude systemctl journalctl sudo crontab sshfs fusermount fusermount3 pc-sshfs`。只要命令里任何一处调用了这些程序，比如写在 `&&`、管道、`$(...)` 后面，或者前面带了 `FOO=1`、`env`，整条命令都留在 VPS 上。按程序名比较，`/usr/local/bin/multica` 也算；只作为参数出现（如 `git log --grep multica`）不算。
 - **用起来像同一个 shell**：
   - **状态保留**：同一个 Claude 会话里，上一条命令的 `cd`、`export`、激活的虚拟环境、定义的函数和别名、`shopt` 选项，下一条命令都还在。每条命令结束时把这些保存到电脑上的 `~/.cache/claude-pc-bridge/sessions/<会话ID>.sh`，下一条命令开始前恢复，和 Claude Code 在本机执行命令的做法相同。
   - **目录同步**：电脑上 `cd` 到挂载目录里的其他位置，Claude 的工作目录也跟着变。`cd` 到挂载目录外（如 `/c/Users`）时，电脑上下一条命令还在那里，Claude 的工作目录不变。
@@ -171,4 +175,5 @@ bash test/test.sh
 - 同一会话里并行执行的命令共用一份状态，最后结束的那条命令保存的状态生效。
 - 判断相对路径时，按 Claude 的工作目录解析。电脑上 `cd` 到挂载目录外之后，命令里的相对路径是相对电脑上的目录，不会被换算。
 - 输出里的路径换算只认 `PC_ROOT` 的几种写法，路径中间有空格时只换到空格前。
+- 白名单只看命令里直接写出来的程序名，通过别名、函数或者 `bash -c '...'` 间接调用的认不出来。
 - 读、改文件走 sshfs，大范围扫描（如对整个挂载目录 `grep -r`）很慢，尽量在项目目录里、经转发在电脑上执行。
