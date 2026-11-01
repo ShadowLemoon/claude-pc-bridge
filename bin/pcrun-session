@@ -1,0 +1,16 @@
+# shellcheck shell=bash
+# 钩子改写后的命令用 source 执行本文件：在电脑上执行命令，然后把 Claude 的工作目录同步到
+# 电脑上命令结束时的目录（在挂载目录里时）。要用 source 而不是直接执行，cd 才能作用到 Claude 的 shell。
+# 用法: . pcrun-session <会话ID> '<命令>'
+__pcb_cwd_file=$(mktemp "${TMPDIR:-/tmp}/pcb-cwd.XXXXXX")
+PC_BRIDGE_SESSION="$1" PC_BRIDGE_CWD_FILE="$__pcb_cwd_file" bash "$(dirname "${BASH_SOURCE[0]}")/pcrun" "$2"
+set -- "$?"
+if [ -s "$__pcb_cwd_file" ]; then
+  IFS= read -r __pcb_dir <"$__pcb_cwd_file"
+  if [ "$__pcb_dir" != "$PWD" ]; then
+    cd "$__pcb_dir" 2>/dev/null
+  fi
+fi
+rm -f "$__pcb_cwd_file"
+unset __pcb_cwd_file __pcb_dir
+return "$1"

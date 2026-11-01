@@ -10,7 +10,7 @@ PREFIX="${PREFIX:-$HOME/.local/share/claude-pc-bridge}"
 CONFIG_DIR="$HOME/.config/claude-pc-bridge"
 SETTINGS="$HOME/.claude/settings.json"
 
-for dep in jq ssh sshfs; do
+for dep in jq perl ssh sshfs; do
   command -v "$dep" >/dev/null || { echo "缺少依赖: $dep" >&2; exit 1; }
 done
 

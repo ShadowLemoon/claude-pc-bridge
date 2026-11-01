@@ -18,6 +18,8 @@ pc_bridge_load_config() {
   PC_ROOT="${PC_ROOT:-/d/Code}"
   PC_ROOT="${PC_ROOT%/}"
   PC_SFTP_PATH="${PC_SFTP_PATH:-/D:/Code}"
+  # ssh 连接复用的控制文件放在这里
+  PC_BRIDGE_CACHE="${PC_BRIDGE_CACHE:-$HOME/.cache/claude-pc-bridge}"
 
   # 挂载目录的几种写法：绝对路径，以及在 $HOME 下时的 ~/...、$HOME/...、${HOME}/...
   MOUNT_ALIASES=("$MOUNT")

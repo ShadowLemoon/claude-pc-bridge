@@ -1,19 +1,21 @@
 #!/bin/bash
-# 通过反向隧道在 PC 的 Git Bash 里执行一条命令。
-# - 当前目录在挂载目录下时，到 PC 上对应的目录执行；否则从 PC_ROOT 开始执行。
-# - 命令里出现的挂载目录路径会换成 PC 上的路径。
+# 通过反向隧道在电脑的 Git Bash 里执行一条命令。
+# - 当前目录在挂载目录下时，到电脑上对应的目录执行；否则从 PC_ROOT 开始执行。
+# - 命令里的挂载目录路径（包括解析后落在挂载目录里的相对路径）换成电脑上的路径。
+# - 输出里的电脑路径换回挂载路径，可以直接拿去读、改文件。PC_BRIDGE_RAW_OUTPUT=1 时不换。
+# - 所有命令共用一条 ssh 连接（ControlMaster），从第二条命令起不用重新握手。
+# - 设置了 PC_BRIDGE_SESSION 时，命令之间保留当前目录、环境变量、函数、别名、shopt 选项，
+#   保存在电脑上的 ~/.cache/claude-pc-bridge/sessions/<会话ID>.sh。
+# - 设置了 PC_BRIDGE_CWD_FILE 时，把电脑上命令结束时的目录换算成挂载路径写进这个文件
+#   （不在 PC_ROOT 下时写空），由 pcrun-session 用来同步 Claude 的工作目录。
 # 用法: pcrun '<命令>'   或   pcrun -- <程序> <参数...>
-# 设置 PC_BRIDGE_DRY_RUN=1 时只打印要在 PC 上执行的命令，不连接 PC。
+# 调试: PC_BRIDGE_DRY_RUN=1 只打印 "cd <起始目录> && <换算后的命令>"，不连接电脑；
+#       PC_BRIDGE_LOCAL_EXEC=1 用本机 bash 执行要发给电脑的脚本，用于测试。
 set -u
 LIB_DIR="$(dirname "$(readlink -f "$0")")/../lib"
 # shellcheck source=../lib/common.sh
 . "$LIB_DIR/common.sh"
 pc_bridge_load_config
-
-case "$PWD/" in
-  "$MOUNT"/*) rel="${PWD#"$MOUNT"}" ;;
-  *) rel="" ;;
-esac
 
 if [ "${1:-}" = "--" ]; then shift; fi
 if [ $# -eq 0 ]; then
@@ -22,16 +24,50 @@ if [ $# -eq 0 ]; then
 fi
 if [ $# -eq 1 ]; then cmd="$1"; else cmd=$(printf '%q ' "$@"); fi
 
-for alias in "${MOUNT_ALIASES[@]}"; do
-  cmd=${cmd//"$alias"/"$PC_ROOT"}
-done
-remote="cd $(printf '%q' "$PC_ROOT$rel") && $cmd"
+pathmap() { MOUNT="$MOUNT" PC_ROOT="$PC_ROOT" perl "$LIB_DIR/pathmap.pl" "$@"; }
+
+# Claude 当前目录对应的电脑目录；不在挂载目录下时为空
+case "$PWD/" in
+  "$MOUNT"/*) claude_pc="$PC_ROOT${PWD#"$MOUNT"}" ;;
+  *) claude_pc="" ;;
+esac
+start="${claude_pc:-$PC_ROOT}"
+cmd=$(printf '%s' "$cmd" | pathmap rewrite "$PWD")
 
 if [ "${PC_BRIDGE_DRY_RUN:-0}" = "1" ]; then
-  printf '%s\n' "$remote"
+  printf 'cd %s && %s\n' "$(printf '%q' "$start")" "$cmd"
   exit 0
 fi
 
-pc_bridge_require_user
-pc_bridge_ssh_opts
-exec ssh -T "${SSH_OPTS[@]}" "$PC_SSH_USER@$PC_SSH_HOST" "$remote"
+session="${PC_BRIDGE_SESSION:-}"
+session="${session//[^A-Za-z0-9_-]/}"
+
+# 发给电脑执行的脚本。用 C 语言环境的 %q 引用，中文等非 ASCII 字符会写成 $'\344...' 的转义，
+# 整个脚本只有 ASCII 字符，经过 Windows 的 ssh 传输不会出现编码问题
+q() { LC_ALL=C printf '%q' "$1"; }
+remote="__pcb_cmd=$(q "$cmd")
+__pcb_start=$(q "$start")
+__pcb_claude=$(q "$claude_pc")
+__pcb_state=$([ -n "$session" ] && printf '"$HOME"/.cache/claude-pc-bridge/sessions/%s.sh' "$session")
+$(grep -Ev '^[[:space:]]*(#|$)' "$LIB_DIR/remote-prelude.sh")"
+
+if [ "${PC_BRIDGE_LOCAL_EXEC:-0}" = "1" ]; then
+  run() { bash -c "$remote"; }
+else
+  pc_bridge_require_user
+  pc_bridge_ssh_opts
+  mkdir -p "$PC_BRIDGE_CACHE"
+  run() {
+    ssh -T "${SSH_OPTS[@]}" -o ControlMaster=auto -o ControlPath="$PC_BRIDGE_CACHE/cm-%C" \
+      -o ControlPersist=10m "$PC_SSH_USER@$PC_SSH_HOST" "$remote"
+  }
+fi
+
+exec 3> >(pathmap filter-err "${PC_BRIDGE_CWD_FILE:-}" >&2)
+err_pid=$!
+run 2>&3 | pathmap filter-out
+rc=${PIPESTATUS[0]}
+# 关掉管道后等标准错误的换算进程写完，避免输出被截断、目录文件还没写好
+exec 3>&-
+wait "$err_pid" 2>/dev/null
+exit "$rc"

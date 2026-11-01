@@ -22,11 +22,18 @@
 
 - **反向隧道**：电脑上的托盘程序 `claude-pc-bridge-tray` 主动连 VPS，把 VPS 的 `localhost:2222` 转发到电脑的 22 端口。电脑不需要公网 IP，也不用开放入站端口。托盘程序自己实现 ssh 连接和代理，不依赖 `ssh.exe`、`connect.exe`，也不读写 `~/.ssh` 下的文件。
 - **sshfs 挂载**：VPS 通过隧道把电脑的 `D:\Code` 挂到 `~/work/pc-code`。Claude Code 的读、改文件工具直接操作这个目录。
-- **命令转发**：Claude Code 每次执行 Bash 命令前会调用钩子 `pcrun-hook`。满足以下任一条件时，钩子把命令改写成 `pcrun '<命令>'`，通过 ssh 到电脑的 Git Bash 里执行：
+- **命令转发**：Claude Code 每次执行 Bash 命令前会调用钩子 `pcrun-hook`。满足以下任一条件时，钩子把命令改写成 `. pcrun-session <会话ID> '<命令>'`，通过 ssh 到电脑的 Git Bash 里执行：
   1. 会话工作目录在 `~/work/pc-code` 下；
-  2. 命令里出现了挂载目录路径（`/home/<你>/work/pc-code`、`~/work/pc-code`、`$HOME/work/pc-code`）。
-
-  `pcrun` 会 `cd` 到电脑上对应的目录（如 `~/work/pc-code/proj` → `/d/Code/proj`），并把命令里的挂载路径换成电脑上的路径。
+  2. 命令里出现了挂载目录路径（`/home/<你>/work/pc-code`、`~/work/pc-code`、`$HOME/work/pc-code`），按路径边界匹配，`~/work/pc-code-old` 不算；
+  3. 命令里的相对路径按当前目录解析后落在挂载目录里，如在 `~/work` 下执行 `cd pc-code/proj`。
+- **用起来像同一个 shell**：
+  - **状态保留**：同一个 Claude 会话里，上一条命令的 `cd`、`export`、激活的虚拟环境、定义的函数和别名、`shopt` 选项，下一条命令都还在。每条命令结束时把这些保存到电脑上的 `~/.cache/claude-pc-bridge/sessions/<会话ID>.sh`，下一条命令开始前恢复，和 Claude Code 在本机执行命令的做法相同。
+  - **目录同步**：电脑上 `cd` 到挂载目录里的其他位置，Claude 的工作目录也跟着变。`cd` 到挂载目录外（如 `/c/Users`）时，电脑上下一条命令还在那里，Claude 的工作目录不变。
+  - **连接复用**：所有命令共用一条 ssh 连接（OpenSSH 的 ControlMaster），每条命令约 0.3 秒；以前每条都重新连接，约 1.2 秒。
+- **路径换算**：
+  - 命令里的挂载路径换成电脑上的路径，如 `~/work/pc-code/proj` → `/d/Code/proj`。
+  - 输出里的电脑路径换回挂载路径，如 `D:\Code\proj\a.py`、`/d/Code/proj/a.py` → `/home/<你>/work/pc-code/proj/a.py`，Claude 可以直接拿去读、改文件。设置 `PC_BRIDGE_RAW_OUTPUT=1` 时不换。
+  - 转发的命令里用到了只在 VPS 上存在的文件（`$HOME` 或 `/tmp` 下、不在挂载目录里），会提示这个文件在电脑上没有。
 
 为什么不直接在 VPS 上对挂载目录跑 git：sshfs 上的文件所有者和 VPS 用户对不上，git 会报 `dubious ownership`；而且 `git status` 要逐个读取文件信息，隔着网络非常慢。
 
@@ -36,6 +43,9 @@
 |---|---|
 | `bin/pcrun` | 在电脑上执行一条命令 |
 | `bin/pcrun-hook` | Claude Code 钩子，决定是否转发 |
+| `bin/pcrun-session` | 钩子改写后的命令 source 它：调用 `pcrun` 执行，再同步 Claude 的工作目录 |
+| `lib/pathmap.pl` | 路径换算：转发判断、命令里的路径、输出里的路径 |
+| `lib/remote-prelude.sh` | 在电脑上执行的脚本主体：恢复和保存会话状态 |
 | `bin/pc-sshfs` | 挂载 / 卸载 / 检查隧道（给 systemd 服务用） |
 | `lib/common.sh` | 读取配置等公共函数 |
 | `config.example.env` | 配置示例 |
@@ -133,8 +143,11 @@
   #local
   ls ~/work/pc-code
   ```
-- 也可以手动调用：`~/.local/share/claude-pc-bridge/bin/pcrun 'git status'`。
+  也可以和命令写在同一行：`#local ls ~/work/pc-code`。钩子会去掉这个前缀再执行；不然 bash 会把整行当成注释，什么都不执行。
+- 也可以手动调用：`~/.local/share/claude-pc-bridge/bin/pcrun 'git status'`。手动调用不带会话 ID，不保存状态。
 - 设置 `PC_BRIDGE_DRY_RUN=1` 时，`pcrun` 只打印要在电脑上执行的命令，不连接电脑，方便排查路径替换。
+- 会话状态出问题（比如恢复出错误的环境变量）时，删掉电脑上的 `~/.cache/claude-pc-bridge/sessions/<会话ID>.sh` 即可重新开始。
+- 复用的 ssh 连接在隧道断开后会失效，通常 ssh 会自动重建；如果命令一直报连接错误，删掉 VPS 上 `~/.cache/claude-pc-bridge/` 里的 `cm-*` 文件。
 
 服务管理：
 
@@ -150,12 +163,12 @@ journalctl -u pc-sshfs -f
 bash test/test.sh
 ```
 
-不需要连接电脑，只依赖 bash 和 jq。覆盖钩子的转发判断（何时转发、何时留在本地）和 `pcrun` 的路径替换。
+不需要连接电脑，只依赖 bash、perl 和 jq。覆盖钩子的转发判断、命令和输出里的路径换算，以及会话状态的保存和恢复（用本机 bash 模拟电脑执行）。
 
 ## 限制
 
-- 每条命令是一次独立的 ssh 调用，不保留上一条命令的 `cd` 和环境变量；需要交互输入的命令不能用。
-- 钩子看的是**会话**工作目录，不是命令里的 `cd`。命令里有挂载路径时也会转发，但写成相对路径（如在 `~/work` 下执行 `cd pc-code/proj`）不会被识别。
-- 判断是否转发用的是字符串匹配，`~/work/pc-code-old` 这类以挂载路径开头的其他目录也会被转发。
-- 命令里有中文时，经过 ssh 传输偶尔会出现编码问题；写 git 提交信息这类长中文文本，建议先写进文件再用 `git commit -F <文件>`。
+- 不保留后台作业（`cmd &` 之后的 `jobs`、`fg`）和没有 `export` 的普通 shell 变量；需要交互输入的命令不能用。
+- 同一会话里并行执行的命令共用一份状态，最后结束的那条命令保存的状态生效。
+- 判断相对路径时，按 Claude 的工作目录解析。电脑上 `cd` 到挂载目录外之后，命令里的相对路径是相对电脑上的目录，不会被换算。
+- 输出里的路径换算只认 `PC_ROOT` 的几种写法，路径中间有空格时只换到空格前。
 - 读、改文件走 sshfs，大范围扫描（如对整个挂载目录 `grep -r`）很慢，尽量在项目目录里、经转发在电脑上执行。
